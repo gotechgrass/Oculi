@@ -9,7 +9,7 @@ The iris moves and shifts its gaze, the pupil breathes, light reflects in the ey
 ## Features
 
 - Moving iris with fine fibres, breathing pupil, glint and soft reflection
-- Natural gaze that jumps to new spots and eases into them
+- Natural gaze that jumps to a new spots and eases into them
 - Random blinks (sometimes a quick double blink)
 - Grayscale mode (default) and green mode
 - Centered in your terminal, cleans up properly when you quit
