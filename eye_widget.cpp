@@ -5,15 +5,21 @@
 // Run:   eye_widget                options: gray | box | a size number 3..8 (4 = default, 3 = smaller)
 //        eye_widget 3 gray         "box" adds a dark backing so it reads well on bright windows
 // Drag it with the left mouse button. Right-click the eye to close it.
+//
+// State: oculi.py writes "<state> <timestamp> <source>" to %LOCALAPPDATA%\Oculi\state.txt (or the file named
+// by OCULI_STATE_FILE). The widget polls it every ~200 ms and maps idle / working / success / warning / error
+// onto the existing renderer. success shows for 3 seconds, then the eye returns to idle.
 #include <windows.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <string>
 
 namespace {
 constexpr double PI = 3.14159265358979323846;
@@ -41,10 +47,82 @@ int frame = 0;
 
 double rnd(double a, double b) { return std::uniform_real_distribution<double>(a, b)(rng); }
 
+// ---- Python bridge: state comes from the file written by oculi.py ----
+enum State { ST_IDLE, ST_WORKING, ST_SUCCESS, ST_WARNING, ST_ERROR };
+constexpr double SUCCESS_SECONDS = 3.0;
+State fileState = ST_IDLE, curState = ST_IDLE;   // last state in the file / state being shown
+double fileTs = 0, seenAt = -1e9;                // timestamp in the file (epoch s) / render time we first saw it
+double pulse = 1.0, spin = 0, spinSpeed = 0.25;  // brightness pulse, iris rotation angle and speed
+
+double nowEpoch() {   // seconds since 1970, the same clock as Python's time.time()
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER u;
+    u.LowPart = ft.dwLowDateTime;
+    u.HighPart = ft.dwHighDateTime;
+    return (double)(u.QuadPart - 116444736000000000ULL) / 1e7;
+}
+
+State parseState(const char* name) {
+    static const char* names[] = {"idle", "working", "success", "warning", "error"};
+    for (int i = 0; i < 5; ++i)
+        if (!std::strcmp(name, names[i])) return (State)i;
+    return ST_IDLE;
+}
+
+void pollState(double t) {
+    static const std::string path = []() -> std::string {
+        const char* p = std::getenv("OCULI_STATE_FILE");   // same override as oculi.py ("" = bridge off)
+        if (p) return p;
+        const char* base = std::getenv("LOCALAPPDATA");
+        return base ? std::string(base) + "\\Oculi\\state.txt" : std::string();
+    }();
+
+    State s = ST_IDLE;
+    double ts = 0;
+    if (!path.empty()) {
+        HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            const DWORD e = GetLastError();
+            if (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND) return;   // busy right now: keep the last state
+        } else {
+            char buf[128] = {0};
+            DWORD n = 0;
+            const BOOL ok = ReadFile(h, buf, sizeof buf - 1, &n, nullptr);
+            CloseHandle(h);
+            if (!ok) return;
+            buf[n] = 0;
+            char name[16] = {0};
+            if (std::sscanf(buf, "%15s %lf", name, &ts) == 2) s = parseState(name);
+            else ts = 0;
+        }
+    }
+    if (s != fileState || ts != fileTs) {   // a new event arrived
+        fileState = s;
+        fileTs = ts;
+        seenAt = t;
+        if (s == ST_SUCCESS && nowEpoch() - ts < SUCCESS_SECONDS) blinkT = t;   // short blink on a fresh success
+    }
+}
+
+State effectiveState(double t) {   // success lasts 3 s; every other state stays until the next event
+    if (fileState == ST_SUCCESS && (nowEpoch() - fileTs >= SUCCESS_SECONDS || t - seenAt >= SUCCESS_SECONDS))
+        return ST_IDLE;
+    return fileState;
+}
+
 char glyph(double b) { return " .:-=+*#%@"[(int)(clamp01(b) * 9.99)]; }
 
 Rgb colorFor(double b) {   // brightness -> terminal-like colour (gray, or green fading to white)
     b = clamp01(b);
+    if (curState >= ST_SUCCESS) {   // success / warning / error: tinted glow, `pulse` scales the brightness
+        static const Rgb hue[] = {{255, 255, 255}, {255, 255, 255}, {40, 255, 90}, {255, 176, 0}, {255, 45, 35}};
+        const Rgb h = hue[curState];
+        const double k = clamp01((0.30 + 0.70 * b) * pulse), white = b > 0.8 ? (b - 0.8) / 0.2 * 70 : 0;
+        return {std::min(255, (int)(h.r * k + white)), std::min(255, (int)(h.g * k + white)),
+                std::min(255, (int)(h.b * k + white))};
+    }
     if (gray) { int c = (int)(45 + 210 * b); return {c, c, c}; }
     const int g = (int)(70 + 185 * b), w = b > 0.6 ? (int)((b - 0.6) / 0.4 * 215) : 0;
     return {w, g, std::min(255, w + (int)(0.15 * g))};
@@ -64,6 +142,8 @@ void computeGrid(double t, double dt, double eyeCx, double eyeCy) {
     const double k = 1 - std::exp(-dt * 10);
     gx += (tx - gx) * k;
     gy += (ty - gy) * k;
+    spinSpeed += ((curState == ST_WORKING ? 3.0 : 0.25) - spinSpeed) * (1 - std::exp(-dt * 6));  // working = fast spin
+    spin += dt * spinSpeed;
 
     // Blink.
     double open = 0.96 + 0.04 * std::sin(t * 1.5);
@@ -102,7 +182,7 @@ void computeGrid(double t, double dt, double eyeCx, double eyeCy) {
                                              (0.10 + 0.90 * std::min(1.0, std::max(0.0, dB) / 10)) * (1 - 0.5 * u * u);
                         const double dx = ux - icx, dy = py - icy, r = std::hypot(dx, dy);
                         if (r < IRIS_R) {
-                            const double a = std::atan2(dy, dx) + t * 0.25;
+                            const double a = std::atan2(dy, dx) + spin;
                             const double fib = 0.5 + 0.5 * std::sin(a * 9 + std::sin(a * 4) * 1.5);
                             double v = 0.28 + 0.32 * fib;
                             v += 0.25 * std::exp(-std::pow((r - rp * 1.7) / 2.5, 2));
@@ -131,6 +211,15 @@ void render() {
     const double t = std::chrono::duration<double>(now - t0).count();
     const double dt = std::chrono::duration<double>(now - tPrev).count();
     tPrev = now;
+
+    if (frame % 6 == 0) pollState(t);   // about every 200 ms (33 ms per frame)
+    curState = effectiveState(t);
+    switch (curState) {
+        case ST_WARNING: pulse = 0.75 + 0.25 * std::sin(2 * PI * 0.8 * t); break;   // slow amber pulse
+        case ST_ERROR:   pulse = 0.65 + 0.35 * std::sin(2 * PI * 2.0 * t); break;   // fast red pulse
+        case ST_SUCCESS: pulse = 1.0 + 0.5 * clamp01(1 - (t - seenAt) / SUCCESS_SECONDS); break;  // green glow fades out
+        default:         pulse = 1.0; break;
+    }
 
     RECT wr;
     GetWindowRect(hwnd, &wr);

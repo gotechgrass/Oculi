@@ -2,14 +2,20 @@
 
 Run:  python -m unittest -v test_oculi      (or: python test_oculi.py)
 """
+import os
 import time
 import unittest
+from unittest import mock
 
 import oculi
 
 
 class OculiTests(unittest.TestCase):
     def setUp(self):
+        # An empty OCULI_STATE_FILE switches the bridge off, so these tests never touch the real state file.
+        env = mock.patch.dict(os.environ, {oculi.STATE_FILE_ENV: ""})
+        env.start()
+        self.addCleanup(env.stop)
         self.o = oculi.Oculi()
         oculi.reset()
 
