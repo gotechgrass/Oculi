@@ -15,8 +15,20 @@ C++ widget polls (the bridge):
 Set the OCULI_STATE_FILE environment variable to use another path (an empty
 value turns the bridge off). `success` lasts SUCCESS_SECONDS, then counts as idle;
 every other state stays until the next event.
+
+Watch any command without changing it (no `import oculi` needed in the command):
+
+    python -m oculi run --source training -- python train.py
+    python -m oculi run --source tests -- pytest -q
+
+working is sent first, then success (exit code 0) or error (anything else). The
+command's output is not touched and its exit code becomes ours.
 """
+import argparse
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -226,7 +238,72 @@ def reset() -> None:
     _default.reset()
 
 
-if __name__ == "__main__":  # tiny demo: python oculi.py
+# ---- run any command and report its outcome -------------------------------------
+RUN_USAGE = "python -m oculi run --source NAME -- COMMAND [ARGS...]"
+
+
+def run_command(source: str, command: List[str]) -> int:
+    """send working -> run `command` -> send success/error. Returns the command's exit code.
+
+    The command inherits our stdin/stdout/stderr, so its output and prompts pass through untouched.
+    """
+    command = list(command)
+    name = command[0]
+    send(source, "working")  # raises ValueError for a bad source, before anything is executed
+    try:
+        command[0] = shutil.which(name) or name  # lets Windows find npm.cmd, pytest.exe, ...
+        code = subprocess.call(command)
+    except KeyboardInterrupt:
+        send(source, "error")
+        return 130
+    except OSError as exc:  # not found / not executable
+        print(f"oculi: cannot run {name!r}: {exc}", file=sys.stderr)
+        send(source, "error")
+        return 126 if isinstance(exc, PermissionError) else 127
+    except BaseException:
+        send(source, "error")  # never leave the eye stuck on "working"
+        raise
+    if code < 0:  # killed by a signal (POSIX): use the shell convention 128 + signal
+        code = 128 - code
+    send(source, "success" if code == 0 else "error")
+    return code
+
+
+def _demo() -> None:  # python oculi.py
     for src, st in [("training", "working"), ("tests", "warning"), ("training", "success"), ("claude", "error")]:
         e = send(src, st)
         print(f"{e.source:<9} -> {e.state:<8} now: {current_state():<8} ({visual().description})")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        _demo()
+        return 0
+    if argv[0] != "run":
+        print(f"oculi: unknown command {argv[0]!r}\nusage: {RUN_USAGE}", file=sys.stderr)
+        return 2
+    rest = argv[1:]
+    if "--" not in rest:
+        print(f"oculi: put '--' before the command\nusage: {RUN_USAGE}", file=sys.stderr)
+        return 2
+    cut = rest.index("--")  # only the first '--' splits; later ones belong to the command
+    options, command = rest[:cut], rest[cut + 1:]
+    parser = argparse.ArgumentParser(prog="python -m oculi run", usage=RUN_USAGE)
+    parser.add_argument("--source", required=True, help="name of what is being watched, e.g. training")
+    try:
+        args = parser.parse_args(options)
+    except SystemExit as exc:  # argparse already printed the message
+        return exc.code if isinstance(exc.code, int) else 2
+    if not command:
+        print(f"oculi: no command given after '--'\nusage: {RUN_USAGE}", file=sys.stderr)
+        return 2
+    try:
+        return run_command(args.source, command)
+    except ValueError as exc:  # e.g. empty --source
+        print(f"oculi: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
