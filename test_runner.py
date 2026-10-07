@@ -123,6 +123,13 @@ class RunnerTests(unittest.TestCase):
                 oculi.run_command("x", [PY])
         self.assertEqual([c.args for c in send.call_args_list], [("x", "working"), ("x", "error")])
 
+    def test_unwritable_state_file_does_not_stop_the_command(self):
+        blocker = os.path.join(self.dir, "blocker")
+        open(blocker, "w").close()                       # a file where the state folder would have to go
+        with mock.patch.dict(os.environ, {oculi.STATE_FILE_ENV: os.path.join(blocker, "state.txt")}):
+            result = self.run_cmd("x", PY, "-c", "import sys; print('ran'); sys.exit(7)")
+        self.assertEqual((result.stdout, result.returncode, result.stderr), ("ran\n", 7, ""))
+
     # ---- argument handling of the CLI itself ----------------------------------
     def test_source_is_required_and_command_does_not_run(self):
         marker = os.path.join(self.dir, "ran")
