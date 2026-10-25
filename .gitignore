@@ -2,3 +2,6 @@
 *.exe
 __pycache__/
 *.py[cod]
+
+# testing_oculi_state
+practice_state_testing.py
