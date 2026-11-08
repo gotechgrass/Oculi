@@ -1,7 +1,27 @@
+
+# IDE
 .vscode/
-*.exe
+
+# Python cache
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
-# testing_oculi_state
+# Compiled binaries and objects
+*.exe
+*.o
+*.obj
+*.dll
+*.lib
+*.pdb
+
+# CMake build directories
+build/
+cmake-build-*/
+
+# Temporary files
+*.tmp
+*.log
+
+# Local testing script
 practice_state_testing.py

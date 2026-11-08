@@ -31,3 +31,6 @@ endif()
 add_executable(test_audio test_audio.cpp)
 target_link_libraries(test_audio PRIVATE oculi_audio)
 
+# Live WASAPI Loopback Interactive Test
+add_executable(test_live_wasapi test_live_wasapi.cpp)
+target_link_libraries(test_live_wasapi PRIVATE oculi_audio)
