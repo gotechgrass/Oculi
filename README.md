@@ -156,6 +156,57 @@ The single line is `<state> <timestamp> <source>`; the timestamp is seconds sinc
 
 Set the `OCULI_STATE_FILE` environment variable to use another path (an empty value turns the bridge off). The desktop eye reads the same variable, so set it for both processes.
 
+## 7. Music Visualizer (Experimental)
+
+A native C++ / Win32 audio engine for real-time music visualization.
+
+### Architecture
+
+- **Audio Capture:** Windows Audio Session API (WASAPI) loopback capture (`audio_capture.h`, `audio_capture.cpp`) captures system audio directly from the default render endpoint without requiring external drivers or virtual audio cables.
+- **Audio Analysis:** Digital signal processing engine (`audio_analysis.h`, `audio_analysis.cpp`) runs an in-place 1024-point Cooley-Tukey Radix-2 FFT with Hann windowing.
+- **Frequency Band Separation:** Isolates bass (20 to 250 Hz), mid frequencies (250 to 2500 Hz), treble (2500 to 16000 Hz), and normalized RMS volume.
+- **Beat and Transient Detection:** Analyzes spectral flux across low-frequency bins with adaptive thresholding to register rhythmic onsets.
+- **Ballistic Smoothing:** Uses asymmetrical attack and decay envelope followers to prevent visual jitter while preserving responsive reaction to transients.
+- **Thread Safety:** Analysis runs decoupled from rendering; the renderer queries an atomic or mutex-protected snapshot of smoothed features.
+
+### Music States vs Notification States
+
+Music states reflect audio dynamics and are distinct from Oculi's five task notification states (`idle`, `working`, `success`, `warning`, `error`):
+
+| Music State | Trigger Condition | Intended Behavior |
+| --- | --- | --- |
+| `Dormant` | Silence or sub-threshold audio | Resting baseline with natural slow breathing |
+| `Listening` | Low or ambient sound without strong rhythm | Attentive state; pupil adjusts to ambient volume |
+| `Groove` | Sustained rhythmic beat and bassline | Rhythmic pupil dilation and iris modulation in sync with music |
+| `Impact` | Beat drop, snare hit, or transient energy peak | Specular glint flare, rapid pupil contraction or expansion |
+
+### Build with CMake
+
+The project includes a `CMakeLists.txt` to build the audio engine and test suite:
+
+```bash
+cmake -B build
+cmake --build build
+```
+
+Run the audio engine verification test:
+
+```bash
+./build/test_audio
+```
+
+Or on Windows Command Prompt:
+
+```cmd
+build\test_audio.exe
+```
+
+### Current Status and Limitations
+
+- The audio capture and analysis engine is fully implemented in C++ and covered by unit tests in `test_audio.cpp`.
+- Live WASAPI loopback capture is implemented and initializes the default audio endpoint, but has not yet been verified against real, continuous system music playback.
+- Direct parameter integration into the `eye` and `eye_widget` renderers is in development.
+
 ## Tests
 
 ```
