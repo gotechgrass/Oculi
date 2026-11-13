@@ -18,8 +18,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <string>
+
+#include "audio_analysis.h"
+#include "audio_capture.h"
 
 namespace {
 constexpr double PI = 3.14159265358979323846;
@@ -35,7 +39,10 @@ HDC memDC;
 HFONT font;
 uint32_t* pixels = nullptr;
 int CW = 4, CH = 8, WW, HH;   // character cell size in pixels, window size
-bool gray = false, box = false;
+bool gray = false, box = false, musicMode = false;
+std::shared_ptr<oculi::AudioAnalyzer> analyzer;
+std::unique_ptr<oculi::AudioCapture> capture;
+oculi::AudioFeatures audioFeat;
 char cells[GH][GW];
 Rgb colors[GH][GW];
 
@@ -142,7 +149,15 @@ void computeGrid(double t, double dt, double eyeCx, double eyeCy) {
     const double k = 1 - std::exp(-dt * 10);
     gx += (tx - gx) * k;
     gy += (ty - gy) * k;
-    spinSpeed += ((curState == ST_WORKING ? 3.0 : 0.25) - spinSpeed) * (1 - std::exp(-dt * 6));  // working = fast spin
+
+    // Spin speed: 'working' state takes priority; in music mode, mid frequencies & groove state drive rotation
+    double targetSpin = 0.25;
+    if (curState == ST_WORKING) {
+        targetSpin = 3.0;
+    } else if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+        targetSpin = 0.25 + audioFeat.mid * 2.2 + (audioFeat.state == oculi::MusicState::Groove ? 0.75 : 0.0);
+    }
+    spinSpeed += (targetSpin - spinSpeed) * (1 - std::exp(-dt * 6));
     spin += dt * spinSpeed;
 
     // Blink.
@@ -159,7 +174,18 @@ void computeGrid(double t, double dt, double eyeCx, double eyeCy) {
     }
 
     const double icx = gx + 1.5 * std::sin(t * 1.3), icy = gy + std::cos(t * 1.1);
-    const double rp = 4.5 + 0.8 * std::sin(t * 1.7);
+
+    // Pupil radius: baseline natural breathing; in music mode, bass & beats drive natural dilation
+    const double baseRp = 4.5 + 0.8 * std::sin(t * 1.7);
+    double rp = baseRp;
+    if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+        double dilation = audioFeat.bass * 2.0 + audioFeat.volume * 0.8;
+        dilation += audioFeat.beatIntensity * 1.2;
+        if (audioFeat.state == oculi::MusicState::Impact) {
+            dilation += 0.8;
+        }
+        rp = std::min(8.0, baseRp + dilation);
+    }
 
     for (int y = 0; y < GH; ++y) {
         const double py = (y + 0.5 - GH / 2.0) * RSTEP;
@@ -183,18 +209,53 @@ void computeGrid(double t, double dt, double eyeCx, double eyeCy) {
                         const double dx = ux - icx, dy = py - icy, r = std::hypot(dx, dy);
                         if (r < IRIS_R) {
                             const double a = std::atan2(dy, dx) + spin;
-                            const double fib = 0.5 + 0.5 * std::sin(a * 9 + std::sin(a * 4) * 1.5);
+
+                            // Mid frequencies modulate iris fiber complexity and movement
+                            double midMod = 1.5;
+                            if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+                                midMod += audioFeat.mid * 2.5;
+                            }
+                            const double fib = 0.5 + 0.5 * std::sin(a * 9 + std::sin(a * 4) * midMod);
                             double v = 0.28 + 0.32 * fib;
                             v += 0.25 * std::exp(-std::pow((r - rp * 1.7) / 2.5, 2));
-                            if (r > IRIS_R - 3) v *= 1 - 0.75 * clamp01((r - (IRIS_R - 3)) / 3);
+
+                            // Treble modulates iris edge brightness and crispness
+                            if (r > IRIS_R - 3) {
+                                double fadeFactor = 0.75;
+                                if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+                                    fadeFactor = std::max(0.20, 0.75 - audioFeat.treble * 0.55);
+                                }
+                                v *= 1 - fadeFactor * clamp01((r - (IRIS_R - 3)) / 3);
+                                if (musicMode && audioFeat.state != oculi::MusicState::Dormant && audioFeat.treble > 0.05f) {
+                                    v += audioFeat.treble * 0.20 * clamp01((r - (IRIS_R - 2)) / 2);
+                                }
+                            }
+
                             b = v * (0.5 + 0.5 * shade) * 1.2;
                             if (r < rp + 1) b *= 0.3;
                             if (r < rp) b = 0;                                        // pupil
-                            if (std::hypot(dx + 4, dy + 6) < 3.0) b = 1.0;           // highlight
-                            else if (std::hypot(dx - 4, dy - 5) < 2.0) b = 0.7;      // soft reflection
+
+                            // Highlights: beat transients and impact state expand specular glint
+                            double hlRadius = 3.0;
+                            double refRadius = 2.0;
+                            if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+                                hlRadius += audioFeat.beatIntensity * 0.8;
+                                if (audioFeat.state == oculi::MusicState::Impact) {
+                                    hlRadius += 0.8;
+                                    refRadius += 0.5;
+                                }
+                            }
+                            if (std::hypot(dx + 4, dy + 6) < hlRadius) b = 1.0;           // highlight
+                            else if (std::hypot(dx - 4, dy - 5) < refRadius) b = 0.7 + (musicMode && audioFeat.state == oculi::MusicState::Impact ? 0.2 : 0.0);      // soft reflection
                         } else {
                             b = 0.9 * shade;                                          // white of the eye
                         }
+
+                        // RMS Volume subtly modulates overall eye intensity without blowout
+                        if (musicMode && audioFeat.state != oculi::MusicState::Dormant && audioFeat.volume > 0.01f) {
+                            b *= (1.0 + audioFeat.volume * 0.25);
+                        }
+
                         ch = glyph(b);
                         if (b >= 0.99) ch = '@';
                     }
@@ -214,11 +275,23 @@ void render() {
 
     if (frame % 6 == 0) pollState(t);   // about every 200 ms (33 ms per frame)
     curState = effectiveState(t);
+
+    if (musicMode && analyzer) {
+        audioFeat = analyzer->getFeatures();
+    }
+
     switch (curState) {
         case ST_WARNING: pulse = 0.75 + 0.25 * std::sin(2 * PI * 0.8 * t); break;   // slow amber pulse
         case ST_ERROR:   pulse = 0.65 + 0.35 * std::sin(2 * PI * 2.0 * t); break;   // fast red pulse
         case ST_SUCCESS: pulse = 1.0 + 0.5 * clamp01(1 - (t - seenAt) / SUCCESS_SECONDS); break;  // green glow fades out
-        default:         pulse = 1.0; break;
+        default:
+            // Idle state: subtle beat pulse when music is active
+            if (musicMode && audioFeat.state != oculi::MusicState::Dormant) {
+                pulse = 1.0 + audioFeat.beatIntensity * 0.30;
+            } else {
+                pulse = 1.0;
+            }
+            break;
     }
 
     RECT wr;
@@ -258,7 +331,14 @@ LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER: render(); return 0;
         case WM_NCHITTEST: return HTCAPTION;               // drag with the left mouse button
         case WM_NCRBUTTONUP: DestroyWindow(h); return 0;   // right-click closes it
-        case WM_DESTROY: PostQuitMessage(0); return 0;
+        case WM_DESTROY:
+            if (capture) {
+                capture->stop();
+                capture.reset();
+            }
+            analyzer.reset();
+            PostQuitMessage(0);
+            return 0;
     }
     return DefWindowProc(h, m, w, l);
 }
@@ -271,11 +351,24 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmd, int) {
     for (char* tok = std::strtok(args, " "); tok; tok = std::strtok(nullptr, " ")) {
         if (!std::strcmp(tok, "gray") || !std::strcmp(tok, "grey")) gray = true;
         else if (!std::strcmp(tok, "box")) box = true;
+        else if (!std::strcmp(tok, "--music") || !std::strcmp(tok, "music")) musicMode = true;
         else if (std::atoi(tok) >= 3 && std::atoi(tok) <= 8) CW = std::atoi(tok);
     }
     CH = CW * 2;
     WW = GW * CW;
     HH = GH * CH;
+
+    // Optional music reactive engine initialization
+    if (musicMode) {
+        analyzer = std::make_shared<oculi::AudioAnalyzer>(48000.0f);
+        capture = std::make_unique<oculi::AudioCapture>(analyzer);
+        if (!capture->start()) {
+            // Graceful fallback if WASAPI loopback cannot be initialized
+            capture.reset();
+            analyzer.reset();
+            musicMode = false;
+        }
+    }
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = proc;
@@ -315,6 +408,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmd, int) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+    if (capture) {
+        capture->stop();
+        capture.reset();
+    }
+    analyzer.reset();
     DeleteObject(font);
     DeleteObject(dib);
     DeleteDC(memDC);
