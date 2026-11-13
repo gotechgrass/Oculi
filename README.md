@@ -178,6 +178,17 @@ Music mode is optional and disabled by default.
   eye_widget --music 3 gray box
   ```
 
+### Music States vs Notification States
+
+Music states reflect audio dynamics and are distinct from Oculi's five task notification states (`idle`, `working`, `success`, `warning`, `error`):
+
+| Music State | Trigger Condition | Intended Behavior |
+| --- | --- | --- |
+| `Dormant` | Silence or sub-threshold audio | Resting baseline with natural slow breathing |
+| `Listening` | Low or ambient sound without strong rhythm | Attentive state; pupil adjusts to ambient volume |
+| `Groove` | Sustained rhythmic beat and bassline | Rhythmic pupil dilation and iris modulation in sync with music |
+| `Impact` | Beat drop, snare hit, or transient energy peak | Specular glint flare, rapid pupil contraction or expansion |
+
 ### Audio-to-Visual Parameter Mapping
 
 Audio analysis maps frequency and transient features onto specific visual elements of the eye:
@@ -203,10 +214,12 @@ Oculi's five core notification states (`idle`, `working`, `success`, `warning`, 
 
 ### Audio Architecture
 
-- **Capture:** Windows Audio Session API (WASAPI) loopback capture (`audio_capture.h`, `audio_capture.cpp`) captures system audio directly from the default render endpoint on a dedicated background thread.
+- **Capture:** Windows Audio Session API (WASAPI) loopback capture (`audio_capture.h`, `audio_capture.cpp`) captures system audio directly from the default render endpoint on a dedicated background thread without requiring external drivers or virtual audio cables.
 - **Analysis:** Real-time digital signal processing (`audio_analysis.h`, `audio_analysis.cpp`) runs an in-place 1024-point Cooley-Tukey Radix-2 FFT with Hann windowing.
+- **Frequency Band Separation:** Isolates bass (20 to 250 Hz), mid frequencies (250 to 2500 Hz), treble (2500 to 16000 Hz), and normalized RMS volume.
+- **Beat and Transient Detection:** Analyzes spectral flux across low-frequency bins with adaptive thresholding to register rhythmic onsets.
 - **Smoothing:** Asymmetrical attack/decay ballistic filters eliminate visual jitter while preserving crisp reaction to drum hits and transient onsets.
-- **Thread Safety & Non-Blocking:** The rendering loop queries a thread-safe snapshot of smoothed features in sub-microsecond time.
+- **Thread Safety & Non-Blocking:** Analysis runs decoupled from rendering; the renderer queries an atomic or mutex-protected snapshot of smoothed features in sub-microsecond time.
 - **Graceful Fallback:** If WASAPI loopback fails to initialize (e.g. no audio output device is present or enabled), `eye_widget` gracefully disables music capture and continues running in normal desktop mode without crashing.
 
 ### Requirements
