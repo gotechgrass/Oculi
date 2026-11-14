@@ -24,7 +24,7 @@ add_executable(eye eye.cpp)
 # Desktop Eye Widget (Windows only)
 if(WIN32)
     add_executable(eye_widget WIN32 eye_widget.cpp)
-    target_link_libraries(eye_widget PRIVATE gdi32 user32)
+    target_link_libraries(eye_widget PRIVATE oculi_audio gdi32 user32)
 endif()
 
 # Audio Engine Tests

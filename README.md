@@ -64,11 +64,12 @@ eye_widget
 
 | Option | What it does |
 | --- | --- |
+| `--music` | Real-time music-reactive mode (reacts to system audio) |
 | `gray` | Black and white instead of green |
 | `box` | Adds a dark backing, helpful on bright windows |
 | `3` to `8` | Size (3 is smallest, 4 is default) |
 
-Options can be combined, for example `eye_widget 3 gray box`.
+Options can be combined, for example `eye_widget --music 3 gray box`.
 
 - **Drag** with the left mouse button to move it.
 - **Right-click** the eye to close it, or run `taskkill /IM eye_widget.exe /F`.
@@ -156,18 +157,26 @@ The single line is `<state> <timestamp> <source>`; the timestamp is seconds sinc
 
 Set the `OCULI_STATE_FILE` environment variable to use another path (an empty value turns the bridge off). The desktop eye reads the same variable, so set it for both processes.
 
-## 7. Music Visualizer (Experimental)
+## 7. Music-Reactive Desktop Eye
 
-A native C++ / Win32 audio engine for real-time music visualization.
+A native C++ / Win32 real-time audio visualization mode for the Desktop Eye (`eye_widget`). When enabled, the eye dynamically reacts to any active Windows system audio (Spotify, YouTube, media players, games) via WASAPI loopback capture without requiring external drivers or virtual audio cables.
 
-### Architecture
+### Commands to Enable and Disable Music Mode
 
-- **Audio Capture:** Windows Audio Session API (WASAPI) loopback capture (`audio_capture.h`, `audio_capture.cpp`) captures system audio directly from the default render endpoint without requiring external drivers or virtual audio cables.
-- **Audio Analysis:** Digital signal processing engine (`audio_analysis.h`, `audio_analysis.cpp`) runs an in-place 1024-point Cooley-Tukey Radix-2 FFT with Hann windowing.
-- **Frequency Band Separation:** Isolates bass (20 to 250 Hz), mid frequencies (250 to 2500 Hz), treble (2500 to 16000 Hz), and normalized RMS volume.
-- **Beat and Transient Detection:** Analyzes spectral flux across low-frequency bins with adaptive thresholding to register rhythmic onsets.
-- **Ballistic Smoothing:** Uses asymmetrical attack and decay envelope followers to prevent visual jitter while preserving responsive reaction to transients.
-- **Thread Safety:** Analysis runs decoupled from rendering; the renderer queries an atomic or mutex-protected snapshot of smoothed features.
+Music mode is optional and disabled by default.
+
+- **Enable Music Mode:**
+  ```cmd
+  eye_widget --music
+  ```
+- **Normal Mode (Music Disabled):**
+  ```cmd
+  eye_widget
+  ```
+- **Combine with Other Widget Options:**
+  ```cmd
+  eye_widget --music 3 gray box
+  ```
 
 ### Music States vs Notification States
 
@@ -180,32 +189,76 @@ Music states reflect audio dynamics and are distinct from Oculi's five task noti
 | `Groove` | Sustained rhythmic beat and bassline | Rhythmic pupil dilation and iris modulation in sync with music |
 | `Impact` | Beat drop, snare hit, or transient energy peak | Specular glint flare, rapid pupil contraction or expansion |
 
-### Build with CMake
+### Audio-to-Visual Parameter Mapping
 
-The project includes a `CMakeLists.txt` to build the audio engine and test suite:
+Audio analysis maps frequency and transient features onto specific visual elements of the eye:
+
+| Audio Feature | Target Visual Element | Visual Response |
+| --- | --- | --- |
+| **Bass (20–250 Hz)** | Pupil radius ($r_p$) | Natural, smooth pupil dilation and bass pump |
+| **Mid frequencies (250–2500 Hz)** | Iris fibers & rotation | Modulates harmonic fiber ripples and spin speed |
+| **Treble (2500–16000 Hz)** | Iris boundary / edge | Sharpens collarette and illuminates iris perimeter |
+| **RMS Volume** | Overall brightness | Gentle intensity modulation without blowing out highlights |
+| **Beat Detection** | Transient pulse | Crisp brightness pulse and immediate pupil onset |
+| **Impact State** | Specular glint & reflection | Flares highlight radius and sharp secondary reflection |
+| **Groove State** | Synchronized rhythm | Cohesive rhythmic modulation locked to tempo |
+| **Dormant State** | Resting baseline | Returns to natural breathing animation during silence |
+
+### State Priority (Music vs Notifications)
+
+Oculi's five core notification states (`idle`, `working`, `success`, `warning`, `error`) take strict priority over music mode:
+
+- **Notification Recognition:** When a task triggers `warning` (amber pulse), `error` (fast red pulse), or `success` (green glow), the state's signature hue and pulse override the visual styling. The internal geometry continues reacting smoothly to audio dynamics beneath the notification tint.
+- **Working State:** A `working` event enforces fast iris rotation regardless of audio tempo.
+- **Idle State:** When no task notification is active (`idle`), the eye fully expresses music states and beat pulses.
+
+### Audio Architecture
+
+- **Capture:** Windows Audio Session API (WASAPI) loopback capture (`audio_capture.h`, `audio_capture.cpp`) captures system audio directly from the default render endpoint on a dedicated background thread without requiring external drivers or virtual audio cables.
+- **Analysis:** Real-time digital signal processing (`audio_analysis.h`, `audio_analysis.cpp`) runs an in-place 1024-point Cooley-Tukey Radix-2 FFT with Hann windowing.
+- **Frequency Band Separation:** Isolates bass (20 to 250 Hz), mid frequencies (250 to 2500 Hz), treble (2500 to 16000 Hz), and normalized RMS volume.
+- **Beat and Transient Detection:** Analyzes spectral flux across low-frequency bins with adaptive thresholding to register rhythmic onsets.
+- **Smoothing:** Asymmetrical attack/decay ballistic filters eliminate visual jitter while preserving crisp reaction to drum hits and transient onsets.
+- **Thread Safety & Non-Blocking:** Analysis runs decoupled from rendering; the renderer queries an atomic or mutex-protected snapshot of smoothed features in sub-microsecond time.
+- **Graceful Fallback:** If WASAPI loopback fails to initialize (e.g. no audio output device is present or enabled), `eye_widget` gracefully disables music capture and continues running in normal desktop mode without crashing.
+
+### Requirements
+
+- **Operating System:** Windows 10 or Windows 11.
+- **Audio Output:** An active audio render device (speakers, headphones).
+- **Build Tools:** CMake 3.15+ and a C++17 compiler (such as MSYS2 UCRT64 GCC, MinGW-w64, or MSVC).
+
+### Build with CMake
 
 ```bash
 cmake -B build
 cmake --build build
 ```
 
-Run the audio engine verification test:
+Run the unit tests:
 
 ```bash
-./build/test_audio
-```
-
-Or on Windows Command Prompt:
-
-```cmd
 build\test_audio.exe
 ```
 
-### Current Status and Limitations
+Run the live interactive WASAPI capture test (inspect real-time FFT bands and states in console):
 
-- The audio capture and analysis engine is fully implemented in C++ and covered by unit tests in `test_audio.cpp`.
-- Live WASAPI loopback capture is implemented and initializes the default audio endpoint, but has not yet been verified against real, continuous system music playback.
-- Direct parameter integration into the `eye` and `eye_widget` renderers is in development.
+```bash
+build\test_live_wasapi.exe 5
+```
+
+### Troubleshooting
+
+| Issue | Solution |
+| --- | --- |
+| Eye does not react to music / stays in `Dormant` | Ensure sound is actively playing through your default Windows playback device. Check Windows Sound Settings to verify the device is set as default. |
+| No audio playback device connected | Oculi detects missing audio endpoints gracefully and falls back to normal mode. Plug in headphones or speakers to enable audio loopback. |
+| Inspecting real-time audio detection | Run `build\test_live_wasapi.exe` in a terminal while playing music to observe live volume bars, frequency bands, beat triggers, and state classifications. |
+
+### Platform Limitations
+
+- WASAPI loopback capture is a Windows-only platform capability.
+- Music mode is integrated into the Windows desktop eye widget (`eye_widget`). The standalone terminal eye (`eye.cpp`) remains a lightweight ASCII animation without audio dependencies.
 
 ## Tests
 
